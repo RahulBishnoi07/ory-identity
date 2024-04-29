@@ -1,52 +1,109 @@
-# Comments are provided throughout this file to help you get started.
-# If you need more help, visit the Docker compose reference guide at
-# https://docs.docker.com/go/compose-spec-reference/
+version: '3.7'
 
-# Here the instructions define your application as a service called "app".
-# This service is built from the Dockerfile in the current directory.
-# You can add other services your application may depend on here, such as a
-# database or a cache. For examples, see the Awesome Compose repository:
-# https://github.com/docker/awesome-compose
 services:
-  app:
-    build:
-      context: .
-      target: final
-    # If your application exposes a port, uncomment the following lines and change
-    # the port numbers as needed. The first number is the host port and the second
-    # is the port inside the container.
-    # ports:
-    #   - 8080:8080
+  kratos-migrate:
+    image: oryd/kratos:v0.13.0
+    environment:
+      - DSN=postgres://postgres:1972@host.docker.internal:5432/kratos?sslmode=disable
+    volumes:
+      - type: volume
+        source: kratos-postgres
+        target: /var/lib/postgresql
+        read_only: false
+      - type: bind
+        source: ./email-password
+        target: /etc/config/kratos
+    command: -c /etc/config/kratos/kratos.yml migrate sql -e --yes
+    restart: on-failure
+    networks:
+      - intranet
 
-    # The commented out section below is an example of how to define a PostgreSQL
-    # database that your application can use. `depends_on` tells Docker Compose to
-    # start the database before your application. The `db-data` volume persists the
-    # database data between container restarts. The `db-password` secret is used
-    # to set the database password. You must create `db/password.txt` and add
-    # a password of your choosing to it before running `docker compose up`.
-    #     depends_on:
-    #       db:
-    #         condition: service_healthy
-    #   db:
-    #     image: postgres
-    #     restart: always
-    #     user: postgres
-    #     secrets:
-    #       - db-password
-    #     volumes:
-    #       - db-data:/var/lib/postgresql/data
-    #     environment:
-    #       - POSTGRES_DB=example
-    #       - POSTGRES_PASSWORD_FILE=/run/secrets/db-password
-    #     expose:
-    #       - 5432
-    #     healthcheck:
-    #       test: [ "CMD", "pg_isready" ]
-    #       interval: 10s
-    #       timeout: 5s
-    #       retries: 5
-    # volumes:
-    #   db-data:
-    # secrets:
-    #   db-password:
-    #     file: db/password.txt
+  kratos:
+    depends_on:
+      - kratos-migrate
+    image: oryd/kratos:v0.13.0
+    ports:
+      - '4433:4433' # public
+      - '4434:4434' # admin
+    restart: unless-stopped
+    environment:
+      - DSN=postgres://postgres:1972@host.docker.internal:5432/kratos?sslmode=disable
+      - LOG_LEVEL=trace
+    command: serve -c /etc/config/kratos/kratos.yml --dev --watch-courier
+    volumes:
+      - type: volume
+        source: kratos-postgres
+        target: /var/lib/postgresql
+        read_only: false
+      - type: bind
+        source: ./email-password
+        target: /etc/config/kratos
+    networks:
+      - intranet
+
+  mailslurper:
+    image: oryd/mailslurper:latest-smtps
+    ports:
+      - '4436:4436'
+      - '4437:4437'
+    networks:
+      - intranet
+
+  hydra-migrate:
+    image: oryd/hydra:v2.2.0-rc.3
+    environment:
+      - DSN=postgres://postgres:1972@host.docker.internal:5432/hydra?sslmode=disable&max_conns=20&max_idle_conns=4
+    command: migrate -c /etc/config/hydra/hydra.yml sql -e --yes
+    volumes:
+      - type: volume
+        source: hydra-postgres
+        target: /var/lib/postgresql
+        read_only: false
+      - type: bind
+        source: ./5-min
+        target: /etc/config/hydra
+    restart: on-failure
+    networks:
+      - intranet
+
+  hydra:
+    image: oryd/hydra:v2.2.0-rc.3
+    ports:
+      - "4444:4444" # Public port
+      - "4445:4445" # Admin port
+      - "5555:5555" # Port for hydra token user
+    command: serve -c /etc/config/hydra/hydra.yml all --dev
+    volumes:
+      - type: volume
+        source: hydra-postgres
+        target: /var/lib/postgresql
+        read_only: false
+      - type: bind
+        source: ./5-min
+        target: /etc/config/hydra
+    environment:
+      - DSN=postgres://postgres:1972@host.docker.internal:5432/hydra?sslmode=disable&max_conns=20&max_idle_conns=4
+    restart: unless-stopped
+    depends_on:
+      - hydra-migrate
+    networks:
+      - intranet
+
+  auth-poc-web:
+    build:
+      context: ./ory-poc
+    volumes: 
+     - ./ory-poc:/usr/src/app
+     - /usr/src/app/node_modules
+    ports:
+      - "3000:3000"
+    networks:
+      - intranet
+    restart: on-failure
+
+networks:
+  intranet:
+
+volumes:
+  kratos-postgres:
+  hydra-postgres:
